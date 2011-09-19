@@ -10,6 +10,7 @@ class PingServer(threading.Thread):
 		self.block_size = block_size # default; use setup for exact
 		self.server = d_addr,socket.gethostbyname(d_addr)
 		threading.Thread.__init__(self)
+		self.debug = 0
 
 		self.blocks = 0
 		self.running = 1
@@ -77,15 +78,15 @@ class PingServer(threading.Thread):
 			timer.cancel()
 			
 			if handler == self.write_block_timeout:
-				print self.server[0],'(block %d)'%ID,': updated'
+				if self.debug: print self.server[0],'(block %d)'%ID,': updated'
 				data = args[1]
 			if handler == self.read_block_timeout:
-				print self.server[0],'(block %d)'%ID,': read'
+				if self.debug: print self.server[0],'(block %d)'%ID,': read'
 				callback,cb_args = args[1],args[2]
 				if len(data) > 0: callback(ID,data,*cb_args)
 				else:             callback(ID,self.null_block(),*cb_args)
 			if handler == self.delete_block_timeout:
-				print self.server[0],'(block %d)'%ID,': deleted'
+				if self.debug: print self.server[0],'(block %d)'%ID,': deleted'
 				data = ''
 
 		if len(data) == 0:
@@ -143,117 +144,32 @@ class PingServer(threading.Thread):
 		# force update queue (as if packet arrived)
 		self.process_block(self.server[1], ID, data)
 
-	def sync_read(self, ID, blocks=1):
-		data = {}
-		timers = []
-		for x in range(ID,ID+blocks,1):
-			timers.append(self.read_block(x, self.sync_read_callback, [data], False))
-		for x in timers: x.join()
-
-		block = ''
-		for x in range(ID,ID+blocks,1):
-			if len(data[x]) < self.block_size:
-				data[x] = data[x] + self.null_block()[len(data[x]):]
-			block = block + data[x]
-		return ID,block
-
-	def sync_read_callback(self, ID, data, data_store):
-		#print 'Callback:',len(data),data
-		data_store[ID] = data
-
-	def index_to_block(self, index): # byte 0 stored in block 1
-		return int(math.floor(float(index) / self.block_size)) + 1
-
-	def read(self, index, length):
-		init_block = int(math.floor(float(index)	/ self.block_size)) + 1 # byte 0 is in block 1
-		fini_block = int(math.ceil (float(index+length) / self.block_size)) + 1
-
-		ID,data = self.sync_read(init_block, fini_block)
-		data = data[index % self.block_size:][:length]
-		return data
-
-	def block_merge(self, old_data, new_data, index = 0):
-		if index >= self.block_size: raise Exception('block_merge: invalid index ('+str(index)+')')
-		old_data = old_data[:self.block_size]
-		new_data = new_data[:self.block_size-index]
-		data = old_data[:index] + new_data + old_data[index+len(new_data):]
-		return data
-
-	def write_blocks(self, index, data):
-		endex = index + len(data)
-		init_index = (index % self.block_size)
-		fini_index = (endex % self.block_size)
-		init_block = (index / self.block_size) + 1 # byte 0 is in block 1
-		fini_block = (endex / self.block_size) + 1
-
-		timers = []
-		if init_index == 0:
-			start_block = data[:self.block_size]
-		else:
-			ID,start_block = self.sync_read(init_block)
-			start_block = self.block_merge(start_block,data,init_index)
-		timers.append(self.write_block(init_block,start_block,False))
-		if init_block == fini_block: return timers
-
-		data = data[self.block_size - init_index:]
-		for x in range(init_block+1,fini_block-1,1):
-			timers.append(self.write_block(x,data,False))
-			data = data[self.block_size:]
-		
-		if fini_index == 0:
-			end_block = data[:self.block_size]
-		else:
-			ID,end_block = self.sync_read(fini_block)
-			end_block = self.block_merge(end_block,data,0)
-		timers.append(self.write_block(fini_block,end_block,False))
-		return timers
-
-	def sync_write(self, index, data):
-		for x in write_blocks(index,data): x.join()
-
 def print_block(ID, data):
 	print '----- print block -----'
 	print 'block',ID,'bytes',len(data)
 	print data
 	print '----- print block -----'
 
-def humanize_bytes(bytes, precision=1):
-	# by Doug Latornell
-	# http://code.activestate.com/recipes/577081-humanized-representation-of-a-number-of-bytes/
-	abbrevs = (
-		(1<<50L, 'PB'),
-		(1<<40L, 'TB'),
-		(1<<30L, 'GB'),
-		(1<<20L, 'MB'),
-		(1<<10L, 'kB'),
-		(1, 'bytes')
-	)
-	if bytes == 1:
-		return '1 byte'
-	for factor, suffix in abbrevs:
-		if bytes >= factor:
-			break
-	return '%.*f %s' % (precision, bytes / factor, suffix)
-
 if __name__ == "__main__":
 	try:
 		PS = PingServer("google.com")
 		#PS = PingServer("172.16.1.1")
+		PS.debug = 1
 		PS.setup()
 		PS.start()
-		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 		PS.read_block(2,print_block)
 		time.sleep(4)
 		PS.write_block(2,'coconut')
 		time.sleep(3)
-		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 
 		PS.write_block(1,'apples')
 		PS.read_block(1,print_block)
 		PS.delete_block(1)
 		PS.read_block(1,print_block)
 		time.sleep(4)
-		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 		
 		PS.write_block(1,'apples')
 		time.sleep(2)
@@ -269,7 +185,7 @@ if __name__ == "__main__":
 		PS.read_block(1,print_block)
 		time.sleep(1)
 		PS.delete_block(1)
-		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 		while True:
 			time.sleep(1)
 		print 'terminate'
@@ -281,6 +197,6 @@ if __name__ == "__main__":
 		print_exc()
 	finally:
 		PS.stop()
-		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 		sys.exit(1)
 		

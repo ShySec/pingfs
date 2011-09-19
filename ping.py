@@ -116,6 +116,25 @@ def verbose_ping(dest_addr, timeout = 2, count = 4):
 			print "get ping in %0.4fms" % delay
 	print
 
+def humanize_bytes(bytes, precision=1):
+	# by Doug Latornell
+	# http://code.activestate.com/recipes/577081-humanized-representation-of-a-number-of-bytes/
+	abbrevs = (
+		(1<<50L, 'PB'),
+		(1<<40L, 'TB'),
+		(1<<30L, 'GB'),
+		(1<<20L, 'MB'),
+		(1<<10L, 'kB'),
+		(1, 'bytes')
+	)
+	if bytes == 1:
+		return '1 byte'
+	for factor, suffix in abbrevs:
+		if bytes >= factor:
+			break
+	return '%.*f %s' % (precision, bytes / factor, suffix)
+
+
 if __name__ == '__main__':
 	if 0:
 		s = build_socket()
