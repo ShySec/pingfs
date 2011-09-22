@@ -1,5 +1,5 @@
 import time, struct, sys, stat
-import ping_disk
+import ping_disk, ping
 
 """
 PingFS_File
@@ -200,15 +200,17 @@ class PingFS:
 			self.disk = ping_disk.PingDisk(server)
 			root = PingDirectory(0,'/')
 			self.disk.write(0,root.serialize())
+	#	print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 
 		except:
 			print 'General Exception'
 			from traceback import print_exc
 			print_exc()
 
-	def read_inode(self,inode):
+	def read_inode(self,inode,length=0):
 		#print 'reading inode',inode
-		block_size = max(self.disk.block_size(),PingFile.file_header)
+		if length == 0:
+			block_size = max(self.disk.block_size(),PingFile.file_header)
 		data = self.disk.read(inode,block_size)
 		size = interpretSize(data)
 
@@ -231,7 +233,7 @@ class PingFS:
 		return pdir
 
 	def get(self, path):
-		print 'PingFS::get(%s)'%path
+		#print 'PingFS::get(%s)'%path
 		if path == '/' or path == '': return self.read_as_dir(0)
 		parts = path.rsplit('/',1)
 		if len(parts) != 2: raise Exception('PingFS::get_file: invalid path: %s'%path)
@@ -330,9 +332,8 @@ def test_fs(FS):
 
 if __name__ == '__main__':
 	try:
-		#FS = PingFS("www.google.com")
-		#FS = PingFS("10.44.0.1")
-		FS = PingFS("172.16.2.1")
+		server = ping.select_server()
+		FS = PingFS(server)
 		init_fs(FS)
 		test_fs(FS)
 

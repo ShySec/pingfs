@@ -1,6 +1,6 @@
 import ping, threading, time, socket, select, sys, struct
 import binascii, threading, collections, math, random
-import ping_server
+import ping, ping_server
 
 
 class PingDisk():
@@ -100,10 +100,11 @@ class PingDisk():
 		for x in timers: x.join()
 
 if __name__ == "__main__":
-        Disk = None
+	Disk = None
 	try:
-		#Disk = PingDisk("10.44.0.1",1024)
-		Disk = PingDisk("google.com",1024)
+		server = ping.select_server()
+		Disk = PingDisk(server,1024)
+		#ping.drop_privileges()
 		data = "1234567890123456789_123456789012345"
 		Disk.write(0,data)
 		time.sleep(1)

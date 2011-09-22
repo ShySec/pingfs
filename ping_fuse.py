@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+import ping
 import fuse, sys
 
 from time import time
@@ -9,9 +10,11 @@ import os      # for filesystem modes (O_RDONLY, etc)
 import errno   # for error number codes (ENOENT, etc)
                # - note: these must be returned as negatives
 
+import ping_reporter
 import ping_filesystem
 import logging
 import posix
+import time
 
 fuse.fuse_python_api = (0,2)
 
@@ -28,8 +31,13 @@ log.addHandler(handler)
 class PingFuse(fuse.Fuse):
 	def __init__(self, server):
 		self.FS = ping_filesystem.PingFS(server)
+		#ping.drop_privileges()
 		fuse.Fuse.__init__(self)
 		log.info('init complete')
+
+	def fsinit(self):
+		self.reporter = ping_reporter.PingReporter(log,'',90)
+		self.reporter.start()
 
 	def getattr(self, path):
 		"""
@@ -49,7 +57,6 @@ class PingFuse(fuse.Fuse):
 		log.info('getattr: %s' % path)
 
 		pFile = self.FS.get(path)
-		if not pFile: log.info('getattr: ENOENT')
 		if not pFile: return -errno.ENOENT
 
 		st = fuse.Stat()
@@ -77,7 +84,7 @@ class PingFuse(fuse.Fuse):
 			files.append(fuse.Direntry(e.name))
 		return files
 
-	def mkdir ( self, path, mode ):
+	def mkdir(self, path, mode ):
 		log.info('mkdir (%s,%04o)'%(path,mode))
 		if path == '/' or path == '': return -errno.EACCESS
 		rPath,rName = path.rsplit('/',1)
@@ -101,9 +108,13 @@ class PingFuse(fuse.Fuse):
 		log.info('read (%s,%d,%d)'%(path,length,offset))
 		pFile = self.FS.get(path)
 		if not pFile: return -errno.ENOENT
+		if offset > len(pFile.data): return -errno.EINVAL
 		if pFile.type == stat.S_IFDIR: return -errno.EISDIR
-		if length+offset > pFile.size: return -errno.EINVAL
 		return pFile.data[offset:offset+length]
+
+	def rename(self, oldPath, newPath):
+		log.info('rename (%s,%s)'%(oldPath,newPath))
+		return -errno.ENOSYS
 
 	def mythread ( self ):
 		log.info('mythread')
@@ -137,10 +148,6 @@ class PingFuse(fuse.Fuse):
 		log.info('release (%s,%x)'%(path,flags))
 		return -errno.ENOSYS
 
-	def rename ( self, oldPath, newPath ):
-		log.info('rename (%s,%s)'%(oldPath,newPath))
-		return -errno.ENOSYS
-
 	def rmdir ( self, path ):
 		log.info('rmdir (%s)'%path)
 		return -errno.ENOSYS
@@ -172,20 +179,22 @@ class PingFuse(fuse.Fuse):
 
 
 if __name__ == "__main__":
+	server = ping.select_server()
 	if len(sys.argv) < 2:
 		print 'usage: %s <mountpoint>' % sys.argv[0]
 		sys.exit(1)
 	sys.argv.append('-f')
-	fs = PingFuse('172.16.2.1')#sys.argv[1])
-	fs.parser.add_option(mountopt="root",metavar="PATH", default='.')
-	fs.parse(values=fs, errex=1)
+	fs = PingFuse(server)
+	#fs.parser.add_option(mountopt="root",metavar="PATH", default='/')
+	#fs.parse(values=fs, errex=1)
+	fs.parse(errex=1)
 
 	fs.flags = 0
 	#fs.multithreaded = 0
 	ping_filesystem.init_fs(fs.FS)
 	#ping_filesystem.test_fs(fs.FS)
 
-	log.info('fs running')
+	log.info('file system up and running')
 	try:
 		fs.main()
 	except KeyboardInterrupt:

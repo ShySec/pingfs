@@ -1,8 +1,5 @@
 import ping, threading, time, socket, select, sys, struct
-import binascii, threading, collections, math, random
-
-
-# delete -> write -> read 
+import binascii, collections, math, random
 
 class PingServer(threading.Thread):
 	def __init__(self, d_addr, block_size=1024, timeout=2):
@@ -24,7 +21,9 @@ class PingServer(threading.Thread):
 		if ID == 0: ID = random.getrandbits(32) # ID size in bits
 
 		ping.data_ping(self.socket,self.server[1],ID,Times)
-		addr,rID,data = ping.recv_ping(self.socket,self.timeout)
+		msg = ping.read_ping(self.socket,self.timeout)
+		if not msg:                   raise Exception('PingServer::setup_timeout: no valid response from '+self.server[0])
+		addr,rID,data = msg['address'],msg['ID'],msg['payload']
 		print "Addr:",addr[0],"rID:",rID,"Data:",len(data),'bytes'
 		if len(data) == 0:            raise Exception('PingServer::setup_timeout: null response from '+self.server[0])
 		if rID != ID:                 raise Exception('PingServer::setup_timeout: invalid response id from '+self.server[0])
@@ -39,8 +38,10 @@ class PingServer(threading.Thread):
 		Filler = self.block_size * Fill
 
 		ping.data_ping(self.socket,self.server[1],ID,Filler)
-		addr,rID,data = ping.recv_ping(self.socket,self.timeout)
-		print "Addr:",addr[0],"rID:",rID,"Data:",len(data),"bytes"
+		msg = ping.read_ping(self.socket,self.timeout)
+		if not msg:                   raise Exception('PingServer::setup_block: no valid response from '+self.server[0])
+		addr,rID,data = msg['address'],msg['ID'],msg['payload']
+		print "Addr:",addr[0],"rID:",rID,"Data:",len(data),'bytes'
 		if len(data) == 0:            raise Exception('PingServer::setup_block: null response from '+self.server[0])
 		if rID != ID:                 raise Exception('PingServer::setup_block: invalid response id from '+self.server[0])
 		if data != len(data)*Fill:    raise Exception('PingServer::setup_block: invalid response data from '+self.server[0])
@@ -68,10 +69,17 @@ class PingServer(threading.Thread):
 					print self.server[0],"timed out"
 				continue
 
-			addr,block_id,data = ping.recv_ping(self.socket,self.timeout)
+			msg = ping.recv_ping(self.socket,self.timeout,True)
+			if not msg: continue
+			addr,block_id,data = msg['address'],msg['ID'],msg['payload']
+			if block_id == 0:
+				import binascii
+				raise Exception('received packet w/ ID 0 packet: '+binascii.hexlify(msg['raw']))
 			self.process_block(addr[0],block_id,data)
 
 	def process_block(self, addr, ID, data):
+		if ID == 0: raise Exception('server responded with ID 0 packet')
+
 		while len(self.queued_events[ID]):
 			handler,timer,args = self.queued_events[ID].popleft()
 			if not timer.is_alive(): continue
@@ -142,6 +150,7 @@ class PingServer(threading.Thread):
 		#print "write block executing"
 		self.blocks = self.blocks + 1
 		# force update queue (as if packet arrived)
+		if ID == 0: raise Exception('write_block_timeout: ID == 0')
 		self.process_block(self.server[1], ID, data)
 
 def print_block(ID, data):
@@ -151,9 +160,10 @@ def print_block(ID, data):
 	print '----- print block -----'
 
 if __name__ == "__main__":
+	server = ping.select_server(1)
+
 	try:
-		PS = PingServer("google.com")
-		#PS = PingServer("172.16.1.1")
+		PS = PingServer(server)
 		PS.debug = 1
 		PS.setup()
 		PS.start()
