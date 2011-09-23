@@ -52,6 +52,7 @@ def enableAllLogs(level=logging.INFO):
 	start_log(ping_fuse.log,level)
 	start_log(ping_filesystem.log,level)
 
+import ping
 def humanize_bytes(bytes, precision=2):
 	# by Doug Latornell
 	# http://code.activestate.com/recipes/577081-humanized-representation-of-a-number-of-bytes/

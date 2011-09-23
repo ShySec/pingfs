@@ -10,6 +10,7 @@ class PingServer(threading.Thread):
 		self.block_size = block_size # default; use setup for exact
 		self.server = d_addr,socket.gethostbyname(d_addr)
 		threading.Thread.__init__(self)
+		self.listeners = []
 		self.debug = 0
 
 		self.blocks = 0
@@ -92,20 +93,33 @@ class PingServer(threading.Thread):
 			if handler == self.write_block_timeout:
 				if self.debug: log.trace('%s (block %d) updated'%(self.server[0],ID))
 				data = args[1]
-			if handler == self.read_block_timeout:
+			elif handler == self.read_block_timeout:
 				if self.debug: log.trace('%s (block %d) read'%(self.server[0],ID))
 				callback,cb_args = args[1],args[2]
 				if len(data) > 0: callback(ID,data,*cb_args)
 				else:             callback(ID,self.null_block(),*cb_args)
-			if handler == self.delete_block_timeout:
+			elif handler == self.delete_block_timeout:
 				if self.debug: log.trace('%s (block %d) deleted'%(self.server[0],ID))
 				data = ''
 
 		if len(data) == 0:
 			self.blocks = self.blocks - 1
 		else:
-			#print self.server[0],'(block %d)'%ID,'(%d):'%len(data),data
+			if len(self.listeners): self.process_listeners(addr, ID, data)
+			log.trace('%s: sending %d bytes from block %d'%(self.server[0],len(data),ID))
 			ping.data_ping(self.socket, addr, ID, data)
+
+	def process_listeners(self, addr, ID, data):
+		if not self.listeners: raise Exception('process_listeners invoked without valid listeners on ID=%d'%ID)
+		self.listeners = [l for l in self.listeners if l[0] >= time.time()] # clean the listeners
+		for x in self.listeners:
+			expire,handler,cb_args = x
+			handler(ID, addr, data, *cb_args)
+
+	def add_listener(self, handler, timeout, args):
+		log.debug('add_listener: timeout=%d handler=%s'%(timeout,handler))
+		expire = time.time() + timeout
+		self.listeners.append((expire,handler,args))
 
 	def null_block(self):
 		return self.block_size * struct.pack('B',0)
@@ -166,9 +180,42 @@ def print_block(ID, data):
 	print data
 	print '----- print block -----'
 
+def __live_blocks(ID, addr, data, datastore):
+	datastore[ID] = 1
+
+def live_blocks(PServer, timeout=1):
+	store = {}
+	PServer.add_listener(__live_blocks,timeout,[store])
+	time.sleep(timeout)
+	return store
+		
+def used_blocks(blocks):
+	result,lookup = {},{}
+	for x in blocks:
+		if x-1 in lookup:
+			lookup[x] = lookup[x-1]
+			result[lookup[x]] += 1
+		else:
+			lookup[x] = x
+			result[x] = 1
+	return result
+
+
+def free_blocks(blocks):
+	result = {}
+	if 1 not in blocks:
+		result[1] = max(1,min(blocks.keys()))-1
+	for x in blocks:
+		if not x+1 in blocks: result[x+1] = 0
+		if not x-1 in blocks:
+			if not len(result): continue
+			block = max(result.keys())
+			result[block] = x-block
+	return result
+
 if __name__ == "__main__":
-	ping_reporter.start_log(log,logging.TRACE)
-	server = ping.select_server(1)
+	ping_reporter.start_log(log,logging.DEBUG)
+	server = ping.select_server(log,1)
 
 	from ping_reporter import humanize_bytes
 	try:
@@ -178,18 +225,26 @@ if __name__ == "__main__":
 		PS.start()
 		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		PS.read_block(2,print_block)
-		time.sleep(4)
+		time.sleep(2)
 		PS.write_block(2,'coconut')
-		time.sleep(3)
+		time.sleep(1)
 		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 
 		PS.write_block(1,'apples')
 		PS.read_block(1,print_block)
-		PS.delete_block(1)
 		PS.read_block(1,print_block)
-		time.sleep(4)
+		time.sleep(2)
 		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
+	
+		log.info('testing block metrics')
+		blocks = live_blocks(PS)
+		log.debug('blocks: %s'%blocks)
+		log.debug('--used: %s'%used_blocks(blocks))
+		log.debug('--free: %s'%free_blocks(blocks))
 		
+		PS.delete_block(1)
+		time.sleep(2)
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		PS.write_block(1,'apples')
 		time.sleep(2)
 		PS.read_block(1,print_block)
@@ -216,6 +271,6 @@ if __name__ == "__main__":
 		print_exc()
 	finally:
 		PS.stop()
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		sys.exit(1)
 		

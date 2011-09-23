@@ -14,10 +14,13 @@ class PingDisk():
 		self.server.stop()
 
 	def size(self):
-		return self.server.block_size * (1<<31)
+		return self.server.block_size * (1<<28)
 
 	def block_size(self):
 		return self.server.block_size
+
+	def region_size(self):
+		return max(2,4096/self.block_size())
 
 	def read_block(self, ID, datastore, blocking=False):
 		timer = self.server.read_block(ID, self.__read_callback, datastore, False)
@@ -99,12 +102,49 @@ class PingDisk():
 		if not blocking: return timers
 		for x in timers: x.join()
 
+	def free_blocks(self, timeout=1):
+		blocks = ping_server.live_blocks(self.server,timeout)
+		log.debug('live_blocks: %s'%blocks)
+		if blocks: return ping_server.free_blocks(blocks)
+		return None
+
+	def used_blocks(self, timeout=1):
+		blocks = ping_server.live_blocks(self.server,timeout)
+		if blocks: return ping_server.used_blocks(blocks)
+		return None
+
+	def get_block_region(self, blocks=1, timeout=1):
+		free = self.free_blocks(timeout)
+		log.debug('get_block_region: %d blocks  %d timeout'%(blocks,timeout))
+		if not free: return None
+		max_blockid = (1<<28)
+
+		# 1) try allocating a new prime region
+		top_node = max(free.keys())
+		reg_size = self.region_size()
+		if max_blockid - top_node > reg_size:
+			return reg_size * int(math.ceil(1.0*top_node/reg_size))
+
+		# 2)try minimal sufficiently large region
+		region = [(v,k) for (k,v) in free.iteritems() if v >= blocks]
+		if region: return min(region)[1]
+		return None
+
+	def get_region(self, bytes, timeout=1):
+		log.debug('get_region: %d bytes  %d timeout'%(bytes,timeout))
+		blocks = int(math.ceil(1.0*bytes / self.block_size())) # to blocks
+		region = self.get_block_region(blocks,timeout)         # <------>
+		if region: region *= self.block_size()                 # to bytes
+		log.debug('get_region: offset %d'%region)
+		return region
+
+
 if __name__ == "__main__":
 	Disk = None
 	try:
-		ping_reporter.start_log(log,logging.TRACE)
-		server = ping.select_server()
-		Disk = PingDisk(server,1024)
+		ping_reporter.start_log(log,logging.DEBUG)
+		server = ping.select_server(log)
+		Disk = PingDisk(server,4)
 		#ping.drop_privileges()
 		data = "1234567890123456789_123456789012345"
 		Disk.write(0,data)
@@ -123,6 +163,10 @@ if __name__ == "__main__":
 		rData = Disk.read(2,10)
 		log.info('length: %d vs %d'%(len(data),len(rData)))
 		log.info('data = %s',rData)
+
+		free_node = Disk.get_region(20)
+		log.info('get_region = %s'%free_node)
+
 		while True:
 			time.sleep(1)
 		print 'terminate'

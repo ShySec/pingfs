@@ -76,7 +76,7 @@ class PingFile(PingNode):
 	overhead = struct.calcsize(layout)
 	file_header = overhead + PingNode.overhead
 
-	def __init__(self,inode=0,name=''):
+	def __init__(self,name='',inode=0):
 		PingNode.__init__(self,inode)
 		self.type = stat.S_IFREG
 		self.mode = 0733
@@ -141,8 +141,8 @@ class PingDirectory(PingFile):
 	layout = 'L'
 	overhead = struct.calcsize(layout)
 	
-	def __init__(self,inode=0,name=''):
-		PingFile.__init__(self,inode,name)
+	def __init__(self,name='',inode=0):
+		PingFile.__init__(self,name,inode)
 		self.type = stat.S_IFDIR
 		self.entries = []
 		self.mode = 0766
@@ -200,8 +200,8 @@ class PingFS:
 	def __init__(self,server):
 		try:
 			self.disk = ping_disk.PingDisk(server)
-			root = PingDirectory(0,'/')
-			self.disk.write(0,root.serialize())
+			root = PingDirectory('/')
+			self.add(root,0)
 
 		except:
 			print 'General Exception'
@@ -248,8 +248,18 @@ class PingFS:
 				return pFile
 		return None
 
-	def add(self,node):
+	def add(self,node,force_inode=None):
+		if force_inode != None:
+			node.inode = force_inode
+		else:
+			node.inode = self.disk.get_region(node.size(),2)
+			if not node.inode: return None
 		log.notice('PingFS::add %s at %d'%(node.name,node.inode))
+		self.disk.write(node.inode,node.serialize())
+		return node.inode
+
+	def update(self,node):
+		log.notice('PingFS::update %s at %d'%(node.name,node.inode))
 		self.disk.write(node.inode,node.serialize())
 		
 	def stop(self):
@@ -257,39 +267,32 @@ class PingFS:
 		self.disk.stop()
 
 def init_fs(FS):
-	log.notice('building root directory')
-	d1 = PingDirectory(0,'/')
-	d1.deserialize(d1.serialize())
+	log.notice('building nodes')
+	d1 = PingDirectory('/')
+	d2 = PingDirectory('l1')
+	f1 = PingFile('apples')
+	f2 = PingFile('banana')
 
-	log.notice('building file (apples)')
-	f1 = PingFile(1*1024,'apples')
-	f1.data = 'delicious apples'
-	f1.deserialize(f1.serialize())
-
-	log.notice('adding node (/apples)')
-	d1.add_node(f1)
-	d1.deserialize(d1.serialize())
-
-	log.notice('building sub-directory (l1)')
-	d2 = PingDirectory(2*1024,'l1')
-
-	log.notice('adding node (/l1)')
-	d1.add_node(d2)
-	d1.deserialize(d1.serialize())
-
-	log.notice('building file (banana)')
-	f2 = PingFile(3*1024,'banana')
-	f2.data = 'ripe yellow bananas'
-	f2.deserialize(f2.serialize())
-
-	log.notice('adding node (/l1/banana)')
-	d2.add_node(f2)
-	d2.deserialize(d2.serialize())
-
-	FS.add(d1)
+	log.notice('adding nodes to system')
+	FS.add(d1,0)
 	FS.add(d2)
 	FS.add(f1)
 	FS.add(f2)
+
+	log.notice('connecting nodes')
+	d1.add_node(d2)
+	d1.add_node(f1)
+	d2.add_node(f2)
+
+	log.notice('fleshing out nodes')
+	f1.data = 'delicious apples\n'
+	f2.data = 'ripe yellow bananas\n'
+
+	log.notice('updating nodes in system')
+	FS.update(d1)
+	FS.update(d2)
+	FS.update(f1)
+	FS.update(f2)
 
 	log.notice('test filesystem initialized')
 
@@ -332,8 +335,7 @@ if __name__ == '__main__':
 	FS = None
 	try:
 		ping_reporter.start_log(log,logging.DEBUG)
-		#ping_reporter.start_log(log,logging.TRACE)
-		server = ping.select_server()
+		server = ping.select_server(log)
 		FS = PingFS(server)
 		init_fs(FS)
 		test_fs(FS)

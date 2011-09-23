@@ -13,7 +13,7 @@ class PingFuse(fuse.Fuse):
 		self.FS = ping_filesystem.PingFS(server)
 		#ping.drop_privileges()
 		fuse.Fuse.__init__(self)
-		log.trace('ping::fuse: initialized')
+		log.notice('ping::fuse: initialized (%d-byte blocks)'%self.FS.disk.block_size())
 
 	def fsinit(self):
 		self.reporter = ping_reporter.PingReporter(log,'',90)
@@ -72,9 +72,9 @@ class PingFuse(fuse.Fuse):
 		if not pDir: return -errno.ENOENT
 		if pDir.get_dirent(rName): return -errno.EEXIST
 
-		nDir = ping_filesystem.PingDirectory(6*1024,rName)
+		nDir = ping_filesystem.PingDirectory(rName)
 		pDir.add_node(nDir)
-		self.FS.add(pDir)
+		self.FS.update(pDir)
 		self.FS.add(nDir)
 		return 0
 
@@ -161,7 +161,7 @@ class PingFuse(fuse.Fuse):
 if __name__ == "__main__":
 	ping_reporter.enableAllLogs(logging.TRACE)
 	#ping_reporter.start_log(log,logging.TRACE)
-	server = ping.select_server()
+	server = ping.select_server(log)
 	if len(sys.argv) < 2:
 		print 'usage: %s <mountpoint>' % sys.argv[0]
 		sys.exit(1)
