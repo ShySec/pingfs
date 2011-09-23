@@ -1,5 +1,7 @@
-import time, struct, sys, stat
-import ping_disk, ping
+import time, struct, sys, stat, logging
+import ping, ping_disk, ping_reporter
+
+log = ping_reporter.setup_log('PingFileSystem')
 
 """
 PingFS_File
@@ -55,24 +57,24 @@ class PingNode():
 		self.inode = inode
 
 	def get_parts(self,data,size):
-		print self,'->',size
 		if len(data) < size: return ''
 		return data[:size],data[size:]
 
 	def serialize(self):
+		log.trace('%s::serialize'%self.__class__.__name__)
 		return struct.pack(PingNode.layout,self.inode)
 
 	def deserialize(self,data):
+		log.trace('%s::deserialize'%self.__class__.__name__)
 		layout,overhead = PingNode.layout,PingNode.overhead
 		if len(data) < overhead: raise Exception('PingFS::node: invalid deserialize data')
 		self.inode = struct.unpack(layout,data[:overhead])[0]
-		#print 'PingNode::inode',self.inode
 		return data[overhead:]
 
 class PingFile(PingNode):
 	layout = '4L'
 	overhead = struct.calcsize(layout)
-	file_header = PingNode.overhead + PingNode.overhead
+	file_header = overhead + PingNode.overhead
 
 	def __init__(self,inode=0,name=''):
 		PingNode.__init__(self,inode)
@@ -87,7 +89,7 @@ class PingFile(PingNode):
 		return self.attrs
 
 	def size(self):
-		return PingNode.overhead + PingFile.overhead + len(self.data)
+		return PingFile.file_header + len(self.data)
 
 	def links(self):
 		return 1
@@ -200,7 +202,6 @@ class PingFS:
 			self.disk = ping_disk.PingDisk(server)
 			root = PingDirectory(0,'/')
 			self.disk.write(0,root.serialize())
-	#	print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
 
 		except:
 			print 'General Exception'
@@ -208,7 +209,7 @@ class PingFS:
 			print_exc()
 
 	def read_inode(self,inode,length=0):
-		#print 'reading inode',inode
+		log.debug('PingFS::read_inode: inode=%d length=%d'%(inode,length))
 		if length == 0:
 			block_size = max(self.disk.block_size(),PingFile.file_header)
 		data = self.disk.read(inode,block_size)
@@ -219,13 +220,13 @@ class PingFS:
 		return data
 
 	def read_as_file(self,inode):
-		#print 'reading file',inode
+		log.debug('PingFS::read_as_file: inode=%d'%inode)
 		data = self.read_inode(inode)
 		pfile = makePingFile(data)
 		return pfile
 
 	def read_as_dir(self,inode):
-		#print 'reading directory',inode
+		log.debug('PingFS::read_as_dir: inode=%d'%inode)
 		data = self.read_inode(inode)
 		pdir = makePingDirectory(data)
 		if not (pdir.type & stat.S_IFDIR):
@@ -233,56 +234,55 @@ class PingFS:
 		return pdir
 
 	def get(self, path):
-		#print 'PingFS::get(%s)'%path
+		log.notice('PingFS::get %s'%path)
 		if path == '/' or path == '': return self.read_as_dir(0)
 		parts = path.rsplit('/',1)
 		if len(parts) != 2: raise Exception('PingFS::get_file: invalid path: %s'%path)
 		rPath,fName = parts[0],parts[1]
-		#print 'PingFS::parts(%s,%s)'%(rPath,fName)
 		pDir = self.get(rPath)
-		#print 'PingFS::get_parent(%s)'%fName,pDir
 		if pDir and pDir.type == stat.S_IFDIR:
 			pEntry = pDir.get_dirent(fName)
-			#print 'PingFS::get_dirent(%s)'%fName,pEntry
 			if pEntry:
 				data = self.read_inode(pEntry.inode)
-				#print 'PingFS::read_inode(%s->%d,%d)'%(fName,pEntry.inode,len(data))
 				pFile = interpretFile(data)
 				return pFile
 		return None
 
 	def add(self,node):
-		print 'adding node',node.name,'at',node.inode
+		log.notice('PingFS::add %s at %d'%(node.name,node.inode))
 		self.disk.write(node.inode,node.serialize())
 		
 	def stop(self):
+		log.info('PingFS: stopping')
 		self.disk.stop()
 
 def init_fs(FS):
-	print 'building root directory'
+	log.notice('building root directory')
 	d1 = PingDirectory(0,'/')
 	d1.deserialize(d1.serialize())
 
-	print 'building file'
+	log.notice('building file (apples)')
 	f1 = PingFile(1*1024,'apples')
 	f1.data = 'delicious apples'
 	f1.deserialize(f1.serialize())
 
-	print 'adding node'
+	log.notice('adding node (/apples)')
 	d1.add_node(f1)
 	d1.deserialize(d1.serialize())
 
-	print 'building sub-directory'
+	log.notice('building sub-directory (l1)')
 	d2 = PingDirectory(2*1024,'l1')
+
+	log.notice('adding node (/l1)')
 	d1.add_node(d2)
 	d1.deserialize(d1.serialize())
 
-	print 'building sub-file'
+	log.notice('building file (banana)')
 	f2 = PingFile(3*1024,'banana')
 	f2.data = 'ripe yellow bananas'
 	f2.deserialize(f2.serialize())
 
-	print 'adding sub-node'
+	log.notice('adding node (/l1/banana)')
 	d2.add_node(f2)
 	d2.deserialize(d2.serialize())
 
@@ -291,47 +291,48 @@ def init_fs(FS):
 	FS.add(f1)
 	FS.add(f2)
 
-	print 'filesystem initialized'
+	log.notice('test filesystem initialized')
 
 def test_fs(FS):
 	root = FS.read_as_dir(0)
-	print '---------------------------------------------'
-	print root
-	print root.type
-	print '---------------------------------------------'
+	log.info('- read as dir / -----------------------------')
+	log.info('%d' % root.type)
+	log.info('---------------------------------------------')
 	
 	root = FS.get('')
-	print '---------------------------------------------'
-	print root
-	print root.type
-	print '---------------------------------------------'
+	log.info('- get "" ------------------------------------')
+	log.info('%d' % root.type)
+	log.info('---------------------------------------------')
 
 	root = FS.get('/')
-	print '---------------------------------------------'
-	if not root: print 'missed /'
-	else:		print root.name,root.inode
-	print '---------------------------------------------'
+	log.info('- get / -------------------------------------')
+	if not root: log.info('missed /')
+	else:		log.info('%s %d'%(root.name,root.inode))
+	log.info('---------------------------------------------')
 
 	sfile = FS.get('/apples')
-	print '---------------------------------------------'
-	if not sfile: print 'missed /apples'
-	else:		print sfile.name,sfile.inode
-	print '---------------------------------------------'
+	log.info('- get /apples -------------------------------')
+	if not sfile: log.info('missed /apples')
+	else:		log.info('%s %d'%(sfile.name,sfile.inode))
+	log.info('---------------------------------------------')
 
 	sub = FS.get('/l1')
-	print '---------------------------------------------'
-	if not sub: print 'missed /l1'
-	else: 		print sub.name,sub.inode
-	print '---------------------------------------------'
+	log.info('- get /l1 -----------------------------------')
+	if not sub: log.info('missed /l1')
+	else: 		log.info('%s %d'%(sub.name,sub.inode))
+	log.info('---------------------------------------------')
 
 	sfile = FS.get('/l1/banana')
-	print '---------------------------------------------'
-	if not sfile: print 'missed /l1/banana'
-	else:		print sfile.name,sfile.inode
-	print '---------------------------------------------'
+	log.info('- get /l1/banana ----------------------------')
+	if not sfile: log.info('missed /l1/banana')
+	else:		log.info('%s %d'%(sfile.name,sfile.inode))
+	log.info('---------------------------------------------')
 
 if __name__ == '__main__':
+	FS = None
 	try:
+		ping_reporter.start_log(log,logging.DEBUG)
+		#ping_reporter.start_log(log,logging.TRACE)
 		server = ping.select_server()
 		FS = PingFS(server)
 		init_fs(FS)
@@ -344,5 +345,5 @@ if __name__ == '__main__':
 		from traceback import print_exc
 		print_exc()
 	finally:
-		FS.stop()
+		if FS: FS.stop()
 		sys.exit(1)

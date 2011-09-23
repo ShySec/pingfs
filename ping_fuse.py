@@ -1,39 +1,19 @@
 #!/usr/bin/python
 
-import ping
-import fuse, sys
-
+import os, sys, stat, errno, posix, logging, time, fuse
+import ping, ping_reporter, ping_filesystem
 from time import time
-
-import stat    # for file properties
-import os      # for filesystem modes (O_RDONLY, etc)
-import errno   # for error number codes (ENOENT, etc)
-               # - note: these must be returned as negatives
-
-import ping_reporter
-import ping_filesystem
-import logging
-import posix
-import time
 
 fuse.fuse_python_api = (0,2)
 
-log = logging.getLogger('PingFuse')
-log.setLevel(logging.DEBUG)
-formatter = logging.Formatter('[%(levelname)s] %(message)s')
-handler = logging.FileHandler('PingFuse.log')
-handler.setFormatter(formatter)
-log.addHandler(handler)
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
-log.addHandler(handler)
+log = ping_reporter.setup_log('PingFuse')
 
 class PingFuse(fuse.Fuse):
 	def __init__(self, server):
 		self.FS = ping_filesystem.PingFS(server)
 		#ping.drop_privileges()
 		fuse.Fuse.__init__(self)
-		log.info('init complete')
+		log.trace('ping::fuse: initialized')
 
 	def fsinit(self):
 		self.reporter = ping_reporter.PingReporter(log,'',90)
@@ -179,6 +159,8 @@ class PingFuse(fuse.Fuse):
 
 
 if __name__ == "__main__":
+	ping_reporter.enableAllLogs(logging.TRACE)
+	#ping_reporter.start_log(log,logging.TRACE)
 	server = ping.select_server()
 	if len(sys.argv) < 2:
 		print 'usage: %s <mountpoint>' % sys.argv[0]

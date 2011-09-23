@@ -1,5 +1,8 @@
 import ping, threading, time, socket, select, sys, struct
-import binascii, collections, math, random
+import binascii, collections, math, random, logging
+import ping_reporter
+
+log = ping_reporter.setup_log('PingServer')
 
 class PingServer(threading.Thread):
 	def __init__(self, d_addr, block_size=1024, timeout=2):
@@ -24,13 +27,13 @@ class PingServer(threading.Thread):
 		msg = ping.read_ping(self.socket,self.timeout)
 		if not msg:                   raise Exception('PingServer::setup_timeout: no valid response from '+self.server[0])
 		addr,rID,data = msg['address'],msg['ID'],msg['payload']
-		print "Addr:",addr[0],"rID:",rID,"Data:",len(data),'bytes'
+		log.debug("Addr=%s rID=%d Data=%d bytes"%(addr[0],rID,len(data)))
 		if len(data) == 0:            raise Exception('PingServer::setup_timeout: null response from '+self.server[0])
 		if rID != ID:                 raise Exception('PingServer::setup_timeout: invalid response id from '+self.server[0])
 		if data != Times:             raise Exception('PingServer::setup_timeout: invalid response data from '+self.server[0])
 		if addr[0] != self.server[1]: raise Exception('PingServer::setup_timeout: invalid response server from '+self.server[0])
 		delay = time.time() - Time
-		print "reply time:",int(1000*delay),"ms"
+		log.notice('echo delay: %.02fms'%(1000*delay))
 
 	def setup_block(self, ID = 0):
 		if ID == 0: ID = random.getrandbits(32) # ID size in bits
@@ -41,32 +44,33 @@ class PingServer(threading.Thread):
 		msg = ping.read_ping(self.socket,self.timeout)
 		if not msg:                   raise Exception('PingServer::setup_block: no valid response from '+self.server[0])
 		addr,rID,data = msg['address'],msg['ID'],msg['payload']
-		print "Addr:",addr[0],"rID:",rID,"Data:",len(data),'bytes'
+		log.debug("Addr=%s rID=%d Data=%d bytes"%(addr[0],rID,len(data)))
 		if len(data) == 0:            raise Exception('PingServer::setup_block: null response from '+self.server[0])
 		if rID != ID:                 raise Exception('PingServer::setup_block: invalid response id from '+self.server[0])
 		if data != len(data)*Fill:    raise Exception('PingServer::setup_block: invalid response data from '+self.server[0])
 		if addr[0] != self.server[1]: raise Exception('PingServer::setup_block: invalid response server from '+self.server[0])
 		self.block_size = len(data)
 		self.empty_block = self.null_block()
+		log.notice('echo length: %d bytes'%self.block_size)
 		
 	def setup(self):
-		print "testing server:",self.server[0]
+		log.trace('PingServer::setup: testing server "%s"'%self.server[0])
 		ID = random.getrandbits(32)
 		self.setup_timeout(ID)
 		self.setup_block(ID)
 
 	def stop(self):
-		print "stopping ping server"
+		log.info('PingServer terminating')
 		self.running = 0
 
 	def run(self):
-		print "starting ping server"
+		log.notice('PingServer starting')
 		while self.running:
 			start_blocks = self.blocks # updated asynchronously
 			ready = select.select([self.socket], [], [], self.timeout)
 			if ready[0] == []: # timeout
 				if start_blocks != 0 and self.blocks != 0:
-					print self.server[0],"timed out"
+					log.error('%s timed out'%self.server[0])
 				continue
 
 			msg = ping.recv_ping(self.socket,self.timeout,True)
@@ -86,15 +90,15 @@ class PingServer(threading.Thread):
 			timer.cancel()
 			
 			if handler == self.write_block_timeout:
-				if self.debug: print self.server[0],'(block %d)'%ID,': updated'
+				if self.debug: log.trace('%s (block %d) updated'%(self.server[0],ID))
 				data = args[1]
 			if handler == self.read_block_timeout:
-				if self.debug: print self.server[0],'(block %d)'%ID,': read'
+				if self.debug: log.trace('%s (block %d) read'%(self.server[0],ID))
 				callback,cb_args = args[1],args[2]
 				if len(data) > 0: callback(ID,data,*cb_args)
 				else:             callback(ID,self.null_block(),*cb_args)
 			if handler == self.delete_block_timeout:
-				if self.debug: print self.server[0],'(block %d)'%ID,': deleted'
+				if self.debug: log.trace('%s (block %d) deleted'%(self.server[0],ID))
 				data = ''
 
 		if len(data) == 0:
@@ -119,6 +123,7 @@ class PingServer(threading.Thread):
 	# read / write / delete a single block
 	def write_block(self, ID, data, blocking = False):
 		# add a block to the queue (or delete if equivalent)
+		log.trace('PingServer::write_block: ID=%d bytes=%d blocking=%s'%(ID,len(data),blocking))
 		if ID == 0: raise Exception('write_block: invalid block ID (0)')
 		if data == '%c'%0 * len(data): return self.delete_block(ID,blocking)
 		t = self.event_insert(ID,self.write_block_timeout,[ID,data[:self.block_size]])
@@ -126,28 +131,30 @@ class PingServer(threading.Thread):
 		return t
 
 	def delete_block(self, ID, blocking = False):
+		log.trace('PingServer::delete_block: ID=%d blocking=%s'%(ID,blocking))
 		if ID == 0: raise Exception('delete_block: invalid block ID (0)')
 		t = self.event_insert(ID,self.delete_block_timeout,[ID])
 		if blocking: t.join()
 		return t
 
 	def read_block(self, ID, callback, cb_args = [], blocking = False):
+		log.trace('PingServer::read_block: ID=%d blocking=%s'%(ID,blocking))
 		if ID == 0: raise Exception('read_block: invalid block ID (0)')
 		t = self.event_insert(ID,self.read_block_timeout,[ID,callback,cb_args])
 		if blocking: t.join()
 		return t
 
 	def read_block_timeout(self, ID, callback, cb_args):
-		#print "read block executing"
+		log.debug('PingServer::read_block_timeout: ID=%d callback=%s'%(ID,callback.__name__))
 		callback(ID,self.null_block(),*cb_args)
 
 	def delete_block_timeout(self, ID):
+		log.debug('PingServer::delete_block_timeout: ID=%d'%ID)
 		# do nothing; we're marked invalid anyhow
-		#print "rem block executing"
 		pass
 
 	def write_block_timeout(self, ID, data):
-		#print "write block executing"
+		log.debug('PingServer::write_block_timeout: ID=%d bytes=%d'%(ID,len(data)))
 		self.blocks = self.blocks + 1
 		# force update queue (as if packet arrived)
 		if ID == 0: raise Exception('write_block_timeout: ID == 0')
@@ -160,26 +167,28 @@ def print_block(ID, data):
 	print '----- print block -----'
 
 if __name__ == "__main__":
+	ping_reporter.start_log(log,logging.TRACE)
 	server = ping.select_server(1)
 
+	from ping_reporter import humanize_bytes
 	try:
 		PS = PingServer(server)
 		PS.debug = 1
 		PS.setup()
 		PS.start()
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		PS.read_block(2,print_block)
 		time.sleep(4)
 		PS.write_block(2,'coconut')
 		time.sleep(3)
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 
 		PS.write_block(1,'apples')
 		PS.read_block(1,print_block)
 		PS.delete_block(1)
 		PS.read_block(1,print_block)
 		time.sleep(4)
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		
 		PS.write_block(1,'apples')
 		time.sleep(2)
@@ -195,7 +204,7 @@ if __name__ == "__main__":
 		PS.read_block(1,print_block)
 		time.sleep(1)
 		PS.delete_block(1)
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		print 'traffic:',ping.ping_count,'pings ('+humanize_bytes(ping.ping_bandwidth)+')'
 		while True:
 			time.sleep(1)
 		print 'terminate'

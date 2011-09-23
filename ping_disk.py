@@ -1,7 +1,8 @@
-import ping, threading, time, socket, select, sys, struct
+import ping, threading, time, socket, select, sys, struct, logging
 import binascii, threading, collections, math, random
-import ping, ping_server
+import ping, ping_server, ping_reporter
 
+log = ping_reporter.setup_log('PingDisk')
 
 class PingDisk():
 	def __init__(self, d_addr, block_size=1024, timeout=2):
@@ -31,16 +32,15 @@ class PingDisk():
 	def read_blocks(self, init_block, fini_block):
 		data = {}
 		timers = []
+		result = ''
 		blocks = range(init_block,fini_block+1)
 		for x in blocks: timers.append(self.read_block(x,[data]))
 		for x in timers: x.join()
-
-		result = ''
 		for x in blocks: result = result + data[x]
 		return result
 
 	def __read_callback(self, ID, data, data_store):
-		#print 'Callback:',len(data),data
+		log.trace('PingDisk::read::callback: ID=%d bytes=%d'%(ID,len(data)))
 		data_store[ID] = data
 
 	def read(self, index, length):
@@ -61,7 +61,7 @@ class PingDisk():
 		return data
 
 	def write_block(self, ID, data, blocking=False):
-		#print 'writing block',ID,': ',data
+		log.trace('PingDisk::write_block: ID=%d bytes=%d'%(ID,len(data)))
 		return self.server.write_block(ID,data,blocking)
 
 	def write_blocks(self, index, data):
@@ -72,7 +72,7 @@ class PingDisk():
 		init_block = (index / self.server.block_size) + 1 # byte 0 is in block 1
 		fini_block = (endex / self.server.block_size) + 1
 
-		#print 'write_blocks',init_block,',',fini_block
+		log.trace('PingDisk::write_blocks: blocks %d-%d'%(init_block,fini_block))
 
 		timers = []
 		if init_index == 0:
@@ -102,6 +102,7 @@ class PingDisk():
 if __name__ == "__main__":
 	Disk = None
 	try:
+		ping_reporter.start_log(log,logging.TRACE)
 		server = ping.select_server()
 		Disk = PingDisk(server,1024)
 		#ping.drop_privileges()
@@ -109,19 +110,19 @@ if __name__ == "__main__":
 		Disk.write(0,data)
 		time.sleep(1)
 		rData = Disk.read(0,len(data))
-		print 'length:',len(data),'vs',len(rData)
-		print 'data = ',rData
+		log.info('length: %d vs %d'%(len(data),len(rData)))
+		log.info('data = %s',rData)
 		Disk.write(10,'abcdefghijk')
 		time.sleep(2)
 		rData = Disk.read(0,len(data))
 		time.sleep(2)
 		rData = Disk.read(2,len(data))
-		print 'length:',len(rData)
-		print 'data = ',rData
+		log.info('length: %d vs %d'%(len(data),len(rData)))
+		log.info('data = %s',rData)
 		time.sleep(2)
 		rData = Disk.read(2,10)
-		print 'length:',len(rData)
-		print 'data = ',rData
+		log.info('length: %d vs %d'%(len(data),len(rData)))
+		log.info('data = %s',rData)
 		while True:
 			time.sleep(1)
 		print 'terminate'
@@ -133,6 +134,7 @@ if __name__ == "__main__":
 		print_exc()
 	finally:
 		if Disk: Disk.stop()
-		print 'traffic:',ping.ping_count,'pings ('+ping.humanize_bytes(ping.ping_bandwidth)+')'
+		log.info('traffic: %d pings (%s)'
+				%(ping.ping_count,ping_reporter.humanize_bytes(ping.ping_bandwidth)))
 		sys.exit(1)
 		
