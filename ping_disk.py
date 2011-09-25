@@ -75,7 +75,7 @@ class PingDisk():
 		init_block = (index / self.server.block_size) + 1 # byte 0 is in block 1
 		fini_block = (endex / self.server.block_size) + 1
 
-		log.trace('PingDisk::write_blocks: blocks %d-%d'%(init_block,fini_block))
+		log.debug('PingDisk::write_blocks: blocks %d-%d'%(init_block,fini_block))
 
 		timers = []
 		if init_index == 0:
@@ -102,42 +102,89 @@ class PingDisk():
 		if not blocking: return timers
 		for x in timers: x.join()
 
-	def free_blocks(self, timeout=1):
+	def delete_blocks(self, index, length):
+		endex = index + length
+		init_block = (index / self.server.block_size) + 1 # byte 0 is in block 1
+		fini_block = (endex / self.server.block_size) + 1
+		log.debug('PingDisk::delete_blocks: blocks %d-%d'%(init_block,fini_block))
+
+		timers = []
+		for x in range(init_block,fini_block+1):
+			timers.append(self.server.delete_block(x))
+		return timers
+
+	# delete operates at block-level boundaries
+	def delete(self, index, length, blocking=False):
+		timers = self.delete_blocks(index,length)
+		if not blocking: return timers
+		for x in timers: x.join()
+
+	def free_blocks(self, timeout=None):
 		blocks = ping_server.live_blocks(self.server,timeout)
 		log.debug('live_blocks: %s'%blocks)
-		if blocks: return ping_server.free_blocks(blocks)
-		return None
+		return ping_server.free_blocks(blocks)
 
-	def used_blocks(self, timeout=1):
+	def used_blocks(self, timeout=None):
 		blocks = ping_server.live_blocks(self.server,timeout)
+		log.debug('used_blocks: %s'%blocks)
 		if blocks: return ping_server.used_blocks(blocks)
-		return None
+		return {}
 
-	def get_block_region(self, blocks=1, timeout=1):
+	def get_block_region(self, blocks=1, timeout=None):
 		free = self.free_blocks(timeout)
-		log.debug('get_block_region: %d blocks  %d timeout'%(blocks,timeout))
+		log.debug('get_block_region: %d blocks'%(blocks))
+		log.debug('frees -> %s'%free)
 		if not free: return None
 		max_blockid = (1<<28)
 
 		# 1) try allocating a new prime region
 		top_node = max(free.keys())
-		reg_size = self.region_size()
-		if max_blockid - top_node > reg_size:
-			return reg_size * int(math.ceil(1.0*top_node/reg_size))
+		reg_size = self.region_size()*int(1 + blocks*self.block_size()/self.region_size())
+		if max_blockid - top_node > reg_size: return top_node
 
 		# 2)try minimal sufficiently large region
 		region = [(v,k) for (k,v) in free.iteritems() if v >= blocks]
 		if region: return min(region)[1]
 		return None
 
-	def get_region(self, bytes, timeout=1):
-		log.debug('get_region: %d bytes  %d timeout'%(bytes,timeout))
-		blocks = int(math.ceil(1.0*bytes / self.block_size())) # to blocks
-		region = self.get_block_region(blocks,timeout)         # <------>
-		if region: region *= self.block_size()                 # to bytes
-		log.debug('get_region: offset %d'%region)
+	def timeout(self):				return self.server.timeout()
+	def safe_timeout(self):			return self.server.safe_timeout()
+	def byte_to_block(self, byte):	return int(math.ceil(1.0*byte/self.block_size()))
+	def block_to_byte(self, block):	return block * self.block_size()
+
+	def get_region(self, bytes, timeout=None, target=None):
+		log.debug('get_region: %d bytes'%(bytes))
+		if not timeout: timeout = self.safe_timeout()
+		if target: return self.test_region(target,bytes,timeout)
+		block = self.byte_to_block(bytes)              # to blocks
+		region = self.get_block_region(block,timeout)  # <------>
+		if region: region = self.block_to_byte(region) # to bytes
+		print '-------------------------------> %d allocated (%d bytes)'%(region,bytes)
 		return region
 
+	def test_region(self, start, end, length, timeout=None):
+		if not timeout: timeout = self.safe_timeout()
+		log.debug('test_region: region=%d-%d length=%d'%(start,end,length))
+		if length < end: return start # smaller block
+		collision = [start+end-1,start+length-1]
+		collision2 = [collision[0],collision[1]]
+		collision[0] = self.byte_to_block(collision[0])
+		collision[1] = self.byte_to_block(collision[1])
+		if collision[0] == collision[1]: return start # same block
+		used = self.used_blocks(timeout)
+		if not used: # 0 used blocks implies no root directory...
+			log.exception('test_region: used blocks returned nil')
+			raise Exception('test_region: used blocks returned nil')
+
+		print 'test_region',start,end,length,'<-c1->',collision2,'<-c2->',collision,'|||',used
+		for x in used:
+			if x+used[x] <= collision[0]: continue # used block terminates before collision
+			if x         >  collision[1]: continue # used block begins after collision space
+			print 'possible collision',x,used[x]
+			return False
+		print 'no collision'
+		return start
+		
 
 if __name__ == "__main__":
 	Disk = None
@@ -146,29 +193,49 @@ if __name__ == "__main__":
 		server = ping.select_server(log)
 		Disk = PingDisk(server,4)
 		#ping.drop_privileges()
-		data = "1234567890123456789_123456789012345"
-		Disk.write(0,data)
-		time.sleep(1)
-		rData = Disk.read(0,len(data))
-		log.info('length: %d vs %d'%(len(data),len(rData)))
-		log.info('data = %s',rData)
-		Disk.write(10,'abcdefghijk')
-		time.sleep(2)
-		rData = Disk.read(0,len(data))
-		time.sleep(2)
-		rData = Disk.read(2,len(data))
-		log.info('length: %d vs %d'%(len(data),len(rData)))
-		log.info('data = %s',rData)
-		time.sleep(2)
-		rData = Disk.read(2,10)
-		log.info('length: %d vs %d'%(len(data),len(rData)))
-		log.info('data = %s',rData)
 
-		free_node = Disk.get_region(20)
-		log.info('get_region = %s'%free_node)
-
-		while True:
+		if 0:
+			data = "1234567890123456789_123456789012345"
+			Disk.write(0,data)
 			time.sleep(1)
+			rData = Disk.read(0,len(data))
+			log.info('length: %d vs %d'%(len(data),len(rData)))
+			log.info('data = %s',rData)
+			Disk.write(10,'abcdefghijk')
+			time.sleep(2)
+			rData = Disk.read(0,len(data))
+			time.sleep(2)
+			rData = Disk.read(2,len(data))
+			log.info('length: %d vs %d'%(len(data),len(rData)))
+			log.info('data = %s',rData)
+			time.sleep(2)
+			rData = Disk.read(2,10)
+			log.info('length: %d vs %d'%(len(data),len(rData)))
+			log.info('data = %s',rData)
+
+		if 1:
+			free_node = Disk.get_region(20)
+			log.info('get_region = %s'%free_node)
+
+			Disk.write(0,'aaa')
+			strA = 'A'*5000
+			strB = 'B'*4096*4
+			Disk.write(0,strA)
+			#Disk.write(5000,strB)
+
+			#log.info('region A [%d] and B [%d] written'%(len(strA),len(strB)))
+			readA = Disk.read(0,len(strA))
+			#readB = Disk.read(5000,len(strB))
+			log.info('region A and B read')
+			if readA != strA: log.error('corruption in region A (%d bytes)'%len(readA))
+			else:				log.debug('region A read successfully')
+			#if readB != strB: log.error('corruption in region B (%d bytes)'%len(readB))
+			import binascii
+			#if readA != strA:
+			#	print binascii.hexlify(strA)
+			#	print binascii.hexlify(readA)
+
+		time.sleep(10)
 		print 'terminate'
 	except KeyboardInterrupt:
 		print "Keyboard Interrupt"

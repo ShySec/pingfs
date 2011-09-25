@@ -7,8 +7,10 @@ log = ping_reporter.setup_log('PingFileSystem')
 PingFS_File
 [00: 4] size
 [04: 4] type
-[08: 4] attributes
-[0c: 4] reserved
+[08: 2] uid
+[0a: 2] gid
+[0c: 2] mode
+[0e: 2] reserved
 [10:__] data
 
 PingFS_Directory(PingFS_File)
@@ -54,6 +56,7 @@ class PingNode():
 	overhead = struct.calcsize(layout)
 
 	def __init__(self,inode=0):
+		self.parent = None
 		self.inode = inode
 
 	def get_parts(self,data,size):
@@ -72,18 +75,18 @@ class PingNode():
 		return data[overhead:]
 
 class PingFile(PingNode):
-	layout = '4L'
+	layout = '2L3H2x'
 	overhead = struct.calcsize(layout)
 	file_header = overhead + PingNode.overhead
 
 	def __init__(self,name='',inode=0):
 		PingNode.__init__(self,inode)
 		self.type = stat.S_IFREG
-		self.mode = 0733
+		self.mode = 0666
 		self.name = name
-		self.attrs = {}
 		self.data = ''
-		self.attr = 0
+		self.uid = 0
+		self.gid = 0
 	
 	def get_attr(self):
 		return self.attrs
@@ -95,17 +98,19 @@ class PingFile(PingNode):
 		return 1
 
 	def serialize(self):
+		self.disk_size = self.size()
 		node_hdr = PingNode.serialize(self)
 		layout,overhead = PingFile.layout,PingFile.overhead
-		file_hdr = struct.pack(layout,len(self.data),self.type,self.attr,0)
+		file_hdr = struct.pack(layout,len(self.data),self.type,self.uid,self.gid,self.mode)
 		return node_hdr + file_hdr + self.data
 
 	def deserialize(self,data):
 		data = PingNode.deserialize(self,data)
 		layout,overhead = PingFile.layout,PingFile.overhead
 		if len(data) < overhead: raise Exception('PingFS::file: invalid deserialize data')
-		size,self.type,self.attr,res = struct.unpack(layout,data[:overhead])
+		size,self.type,self.uid,self.gid,self.mode = struct.unpack(layout,data[:overhead])
 		self.data = data[overhead:overhead+size]
+		self.disk_size = self.size()
 		#print 'PingFile::name(',self.name,'),size,type,attr:',size,self.type,self.attr
 		return data[overhead+size:]
 
@@ -114,7 +119,7 @@ class PingDirent(PingNode):
 	overhead = struct.calcsize(layout)
 
 	def __init__(self):
-		pass
+		PingNode.__init__(self,None)
 
 	def size(self):
 		return PingNode.overhead + PingDirent.overhead + len(self.name)
@@ -157,18 +162,19 @@ class PingDirectory(PingFile):
 		return len(self.entries) + 1
 		
 	def add_node(self,node):
+		if node.parent: node.parent.del_node(node.name,node)
 		self.del_node(node.name)
 		dirent = PingDirent()
-		dirent.inode = node.inode
 		dirent.name = node.name
+		dirent.inode = node.inode
 		self.entries.append(dirent)
+		node.parent = self
 
-	def del_node(self,name):
-		for x in self.entries:
-			if x.name == name:
-				del x
+	def del_node(self,name,node=None):
+		self.entries = [x for x in self.entries if x.name != name]
+		if node: node.parent = None
 
-	def get_dirent(self,name):
+	def get_dirent(self,name,node=None):
 		for x in self.entries:
 			if x.name == name:
 				return x
@@ -200,8 +206,8 @@ class PingFS:
 	def __init__(self,server):
 		try:
 			self.disk = ping_disk.PingDisk(server)
-			root = PingDirectory('/')
-			self.add(root,0)
+			self.cache = PingDirectory('/') # create root
+			self.add(self.cache,0) # and cache it
 
 		except:
 			print 'General Exception'
@@ -222,6 +228,7 @@ class PingFS:
 	def read_as_file(self,inode):
 		log.debug('PingFS::read_as_file: inode=%d'%inode)
 		data = self.read_inode(inode)
+		pfile = make
 		pfile = makePingFile(data)
 		return pfile
 
@@ -233,34 +240,152 @@ class PingFS:
 			raise Exception('read_as_dir: %s (%d,%d) -> %x %d'%(pdir.name,inode,len(data),pdir.type,len(pdir.entries)))
 		return pdir
 
+	def cache_hit(self,name,pFile=None):
+		if not self.cache: return False
+		if self.cache.name != name: return False
+		if pFile and self.cache.inode != pFile.inode: return False
+		return True
+
 	def get(self, path):
 		log.notice('PingFS::get %s'%path)
-		if path == '/' or path == '': return self.read_as_dir(0)
+		if self.cache_hit(path): return self.cache
+		if path == '/' or path == '':
+			if self.cache.inode == 0: return self.cache
+			return self.read_as_dir(0)
 		parts = path.rsplit('/',1)
 		if len(parts) != 2: raise Exception('PingFS::get_file: invalid path: %s'%path)
 		rPath,fName = parts[0],parts[1]
 		pDir = self.get(rPath)
 		if pDir and pDir.type == stat.S_IFDIR:
 			pEntry = pDir.get_dirent(fName)
+			self.cache = pDir # cache the directory
+			self.cache.name = rPath
 			if pEntry:
 				data = self.read_inode(pEntry.inode)
 				pFile = interpretFile(data)
+				pFile.name = pEntry.name
 				return pFile
 		return None
+
+	def get_parent(self, path, pFile=None):
+		if path == '/' or path == '': return self.get('/')
+		parts = path.rsplit('/',1)
+		if len(parts) != 2:
+			log.exception('PingFS::get_parent: invalid path: %s'%path)
+			return None
+		pDir = self.get(parts[0])
+		if pDir.type != stat.S_IFDIR: return None
+		return pDir
+
+	def root_node(self, node):
+		if node.inode == 0: return True
+		return False
+
+	def unlink(self, path, pFile=None, pDir=None):
+		log.notice('PingFS::unlink %s'%path)
+		if not pFile:             pFile = self.get(path)
+		if not pFile:             return False
+		if self.root_node(pFile): return False # don't delete the root
+		if not pDir:              pDir = self.get_parent(path,pFile)
+		if pDir:  self.disconnect(path,pFile,pDir)
+		self.delete(path,pFile)
+		return True
+
+	def disconnect(self, path, pFile=None, pDir=None):
+		log.notice('PingFS::disconnect %s'%path)
+		if path == '/' or path == '': return False
+		if not pFile: pFile = self.get(path)
+		if not pFile: return False
+		if not pDir:  pDir = self.get_parent(path,pFile)
+		if not pDir:  return True # we're technically disconnected
+		pDir.del_node(pFile.name,pFile)
+		self.update(pDir)
+		return True
+
+	def delete(self, path, pFile=None): # assumes node disconnected from dir tree
+		log.notice('PingFS::delete %s'%path)
+		if not pFile: pFile = self.get(path)
+		if not pFile: return False
+		if self.cache_hit(path,pFile): self.cache = None
+		self.disk.delete(pFile.inode,pFile.size())
+
+	def move_blocks(self, path, pFile, dest, pDir=None):
+		log.debug('move_blocks: %s (%d->%d)'%(pFile.name,pFile.inode,dest))
+		if self.root_node(pFile): return False # don't move the root
+		if not pDir: pDir = self.get_parent(path,pFile)
+		if not pDir: return False
+		self.delete(pFile.name,pFile)
+		self.add(pFile,dest)
+		dirent = pDir.get_dirent(pFile.name,pFile)
+		dirent.inode = dest
+		self.update(pDir)
+		return True
+
+	def move_links(self, pFile, oDir, nDir):
+		log.notice('move_links: %s (%s -> %s)'%(pFile.name,oDir.name,nDir.name))
+		if self.root_node(pFile): raise Exception('move_link on root!')
+		if not oDir.get_dirent(pFile.name,pFile): return False
+		oDir.del_node(pFile.name,pFile); self.update(oDir)
+		nDir.add_node(pFile.name,pFile); self.update(nDir)
+		return True
+
+	def cache_update(self,node):
+		if not self.cache: return
+		if self.cache.inode != node.inode: return
+		self.cache = node
 
 	def add(self,node,force_inode=None):
 		if force_inode != None:
 			node.inode = force_inode
 		else:
-			node.inode = self.disk.get_region(node.size(),2)
+			node.inode = self.disk.get_region(node.size())
 			if not node.inode: return None
 		log.notice('PingFS::add %s at %d'%(node.name,node.inode))
 		self.disk.write(node.inode,node.serialize())
+		self.cache_update(node)
 		return node.inode
 
-	def update(self,node):
-		log.notice('PingFS::update %s at %d'%(node.name,node.inode))
-		self.disk.write(node.inode,node.serialize())
+	def relocate(self,pFile,pDir=None):
+		log.notice('relocating %s to larger region'%pFile)
+		print 'relocating %s to larger region'%pFile
+		region = self.disk.get_region(pFile.size())
+		if not region: raise Exception('PingFS::update %s at %d: collision correction fail'%(pFile.name,pFile.inode))
+		if not pFile.parent: pFile.parent = pDir
+		if not pFile.parent: raise Exception('PingFS::update %s at %d: collision parent not found'%(pFile.name,pFile.inode))
+		if not self.move_blocks(None,pFile,region,pFile.parent):
+			raise Exception('PingFS::update %s at %d: collision correction failed'%(pFile.name,pFile.inode))
+		print 'relocated %s to %d region'%(pFile,region)
+		return True
+	
+	def update(self,pFile,pDir=None):
+		log.debug('PingFS::update %s at %d'%(pFile.name,pFile.inode))
+		if pFile.size() > pFile.disk_size:
+			log.debug('%d: %d -> %d'%(pFile.inode,pFile.disk_size,pFile.size()))
+			region = self.disk.test_region(pFile.inode,pFile.disk_size,pFile.size())
+			if region != pFile.inode: return self.relocate(pFile,pDir) # continuing would cause collision
+		self.disk.write(pFile.inode,pFile.serialize())
+		self.cache_update(pFile)
+		return True
+
+	def create(self,path,buf='',offset=0):
+		log.debug('PingFS::create %s (offset=%d len=%d)'%(path,offset,len(buf)))
+		parts = path.rsplit('/',1)
+		if len(parts) != 2:
+			log.exception('PingFS::create: invalid path: %s'%path)
+			return False
+		rPath,rName = parts[0],parts[1]
+		pDir = self.get(rPath)
+		if not pDir:
+			log.error('PingFS::create invalid parent dir: %s'%path)
+			return False
+		pFile = PingFile(rName)
+		if not offset: offset = ''
+		else: offset = '\0'*offset
+		pFile.data = offset + buf
+		inode = self.add(pFile)
+		pDir.add_node(pFile)
+		self.update(pDir)
+		return pFile
 		
 	def stop(self):
 		log.info('PingFS: stopping')
@@ -272,6 +397,9 @@ def init_fs(FS):
 	d2 = PingDirectory('l1')
 	f1 = PingFile('apples')
 	f2 = PingFile('banana')
+	f1.mode = 0700
+	f1.uid = 1000
+	f1.gid = 1000
 
 	log.notice('adding nodes to system')
 	FS.add(d1,0)
@@ -293,6 +421,8 @@ def init_fs(FS):
 	FS.update(d2)
 	FS.update(f1)
 	FS.update(f2)
+
+	FS.create('/l1/bonus','contenttttttt',0)
 
 	log.notice('test filesystem initialized')
 

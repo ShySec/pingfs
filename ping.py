@@ -117,7 +117,7 @@ def parse_icmp(packet,validate):
 
 def parse_ping(packet,validate=False):
 	log.trace('ping::parse_ping: bytes=%d validate=%s'%(len(packet),validate))
-	if len(packet) < 28: return None
+	if len(packet) < 20+8+1: return None # require 1 block of data
 	ip = parse_ip(packet)
 	if not ip:                                return None
 	if ip['protocol'] != socket.IPPROTO_ICMP: return None # ICMP

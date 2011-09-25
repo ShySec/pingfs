@@ -5,10 +5,10 @@ import ping_reporter
 log = ping_reporter.setup_log('PingServer')
 
 class PingServer(threading.Thread):
-	def __init__(self, d_addr, block_size=1024, timeout=2):
-		self.timeout = timeout
+	def __init__(self, d_addr, block_size=1024, initial_timeout=2):
 		self.block_size = block_size # default; use setup for exact
 		self.server = d_addr,socket.gethostbyname(d_addr)
+		self.running_timeout = initial_timeout
 		threading.Thread.__init__(self)
 		self.listeners = []
 		self.debug = 0
@@ -18,6 +18,9 @@ class PingServer(threading.Thread):
 		self.socket = ping.build_socket()
 		self.empty_block = self.null_block()
 		self.queued_events = collections.defaultdict(collections.deque)
+	
+	def timeout(self):		return 2.0/5.0 # self.running_timeout
+	def safe_timeout(self): return 3 * self.timeout()
 
 	def setup_timeout(self, ID=0):
 		Time = time.time()
@@ -25,7 +28,7 @@ class PingServer(threading.Thread):
 		if ID == 0: ID = random.getrandbits(32) # ID size in bits
 
 		ping.data_ping(self.socket,self.server[1],ID,Times)
-		msg = ping.read_ping(self.socket,self.timeout)
+		msg = ping.read_ping(self.socket,self.timeout())
 		if not msg:                   raise Exception('PingServer::setup_timeout: no valid response from '+self.server[0])
 		addr,rID,data = msg['address'],msg['ID'],msg['payload']
 		log.debug("Addr=%s rID=%d Data=%d bytes"%(addr[0],rID,len(data)))
@@ -42,7 +45,7 @@ class PingServer(threading.Thread):
 		Filler = self.block_size * Fill
 
 		ping.data_ping(self.socket,self.server[1],ID,Filler)
-		msg = ping.read_ping(self.socket,self.timeout)
+		msg = ping.read_ping(self.socket,self.timeout())
 		if not msg:                   raise Exception('PingServer::setup_block: no valid response from '+self.server[0])
 		addr,rID,data = msg['address'],msg['ID'],msg['payload']
 		log.debug("Addr=%s rID=%d Data=%d bytes"%(addr[0],rID,len(data)))
@@ -68,13 +71,13 @@ class PingServer(threading.Thread):
 		log.notice('PingServer starting')
 		while self.running:
 			start_blocks = self.blocks # updated asynchronously
-			ready = select.select([self.socket], [], [], self.timeout)
+			ready = select.select([self.socket], [], [], self.timeout())
 			if ready[0] == []: # timeout
 				if start_blocks != 0 and self.blocks != 0:
 					log.error('%s timed out'%self.server[0])
 				continue
 
-			msg = ping.recv_ping(self.socket,self.timeout,True)
+			msg = ping.recv_ping(self.socket,self.timeout(),True)
 			if not msg: continue
 			addr,block_id,data = msg['address'],msg['ID'],msg['payload']
 			if block_id == 0:
@@ -125,7 +128,7 @@ class PingServer(threading.Thread):
 		return self.block_size * struct.pack('B',0)
 		
 	def async_timeout(self, func, args):
-		t = threading.Timer(self.timeout,func,args)
+		t = threading.Timer(self.timeout(),func,args)
 		t.start()
 		return t
 
@@ -183,8 +186,9 @@ def print_block(ID, data):
 def __live_blocks(ID, addr, data, datastore):
 	datastore[ID] = 1
 
-def live_blocks(PServer, timeout=1):
+def live_blocks(PServer, timeout=None):
 	store = {}
+	if not timeout: timeout = PServer.safe_timeout()
 	PServer.add_listener(__live_blocks,timeout,[store])
 	time.sleep(timeout)
 	return store
@@ -204,7 +208,9 @@ def used_blocks(blocks):
 def free_blocks(blocks):
 	result = {}
 	if 1 not in blocks:
-		result[1] = max(1,min(blocks.keys()))-1
+		if not blocks:         result[1] = 0
+		elif len(blocks) == 0: result[1] = 0
+		else:                  result[1] = min(blocks.keys())-1
 	for x in blocks:
 		if not x+1 in blocks: result[x+1] = 0
 		if not x-1 in blocks:
