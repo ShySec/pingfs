@@ -23,9 +23,9 @@ class PingDisk():
 		return max(2,4096/self.block_size())
 
 	def read_block(self, ID, datastore, blocking=False):
-		timer = self.server.read_block(ID, self.__read_callback, datastore, False)
-		if not blocking: return timer
-		timer.join()
+		event = self.server.read_block(ID, self.__read_callback, datastore, False)
+		if not blocking: return event
+		event.wait()
 
 	def read_block_sync(self, ID):
 		data = {}
@@ -34,11 +34,12 @@ class PingDisk():
 
 	def read_blocks(self, init_block, fini_block):
 		data = {}
-		timers = []
+		events = []
 		result = ''
 		blocks = range(init_block,fini_block+1)
-		for x in blocks: timers.append(self.read_block(x,[data]))
-		for x in timers: x.join()
+		log.debug('PingDisk::read_blocks: blocks %d-%d'%(init_block,fini_block))
+		for x in blocks: events.append(self.read_block(x,[data]))
+		for x in events: x.wait()
 		for x in blocks: result = result + data[x]
 		return result
 
@@ -53,6 +54,8 @@ class PingDisk():
 		init_block = (index / self.server.block_size) + 1
 		fini_block = (endex / self.server.block_size) + 1
 
+		if 0 == endex % self.server.block_size:
+			fini_block = max(init_block,fini_block-1)
 		data = self.read_blocks(init_block,fini_block)
 		return data[init_index:fini_index]
 
@@ -74,33 +77,32 @@ class PingDisk():
 		fini_index = (endex % self.server.block_size)
 		init_block = (index / self.server.block_size) + 1 # byte 0 is in block 1
 		fini_block = (endex / self.server.block_size) + 1
-
 		log.debug('PingDisk::write_blocks: blocks %d-%d'%(init_block,fini_block))
 
-		timers = []
+		events = []
 		if init_index == 0:
 			start_block = data[:block_size]
 		else:
 			start_block = self.read_block_sync(init_block)
 			start_block = self.__block_merge(start_block,data,init_index)
-		timers.append(self.write_block(init_block,start_block))
-		if init_block == fini_block: return timers
+		events.append(self.write_block(init_block,start_block))
+		if init_block == fini_block: return events
 
 		data = data[self.server.block_size - init_index:]
 		for x in range(init_block+1,fini_block):
-			timers.append(self.write_block(x,data[:block_size]))
+			events.append(self.write_block(x,data[:block_size]))
 			data = data[block_size:]
 		
 		if fini_index != 0:
 			end_block = self.read_block_sync(fini_block)
 			end_block = self.__block_merge(end_block,data,0)
-			timers.append(self.write_block(fini_block,end_block))
-		return timers
+			events.append(self.write_block(fini_block,end_block))
+		return events
 
 	def write(self, index, data, blocking=True):
-		timers = self.write_blocks(index,data)
-		if not blocking: return timers
-		for x in timers: x.join()
+		events = self.write_blocks(index,data)
+		if not blocking: return events
+		for x in events: x.wait()
 
 	def delete_blocks(self, index, length):
 		endex = index + length
@@ -108,16 +110,17 @@ class PingDisk():
 		fini_block = (endex / self.server.block_size) + 1
 		log.debug('PingDisk::delete_blocks: blocks %d-%d'%(init_block,fini_block))
 
-		timers = []
+		events = []
 		for x in range(init_block,fini_block+1):
-			timers.append(self.server.delete_block(x))
-		return timers
+			events.append(self.server.delete_block(x))
+		return events
 
 	# delete operates at block-level boundaries
 	def delete(self, index, length, blocking=False):
-		timers = self.delete_blocks(index,length)
-		if not blocking: return timers
-		for x in timers: x.join()
+		log.debug('PingDisk::delete: index=%d for %d bytes'%(index,length))
+		events = self.delete_blocks(index,length)
+		if not blocking: return events
+		for x in events: x.wait()
 
 	def free_blocks(self, timeout=None):
 		blocks = ping_server.live_blocks(self.server,timeout)
@@ -189,47 +192,70 @@ class PingDisk():
 if __name__ == "__main__":
 	Disk = None
 	try:
-		ping_reporter.start_log(log,logging.DEBUG)
+		#ping_reporter.start_log(log,logging.DEBUG)
+		ping_reporter.enableAllLogs(logging.DEBUG)
 		server = ping.select_server(log)
 		Disk = PingDisk(server,4)
 		#ping.drop_privileges()
 
 		if 0:
 			data = "1234567890123456789_123456789012345"
+			log.info('blind disk read')
+			rData = Disk.read(0,50)
+			log.info('1-length: 50 requested -> %d'%(len(rData)))
+			if rData != '\0'*50: log.exception('invalid rData: %s'%rData)
+			else: log.info('success')
+			time.sleep(5)
+
+			log.info('writing %d bytes'%len(data))
 			Disk.write(0,data)
-			time.sleep(1)
+			time.sleep(5)
 			rData = Disk.read(0,len(data))
-			log.info('length: %d vs %d'%(len(data),len(rData)))
-			log.info('data = %s',rData)
-			Disk.write(10,'abcdefghijk')
+			log.info('2-length: %d vs %d'%(len(data),len(rData)))
+			if rData != data: log.exception('invalid rData: %s'%rData)
+			else: log.info('success')
+
+			wData = 'abcdefghijk'
+			Disk.write(10,wData)
 			time.sleep(2)
 			rData = Disk.read(0,len(data))
+			data = data[0:10] + wData + data[10+len(wData):]
+			log.info('3-length: %d vs %d'%(len(data),len(rData)))
+			if rData != data: log.exception('invalid rData: %s'%rData)
+			else: log.info('success')
+
 			time.sleep(2)
+			data = data[2:] + '\0\0'
 			rData = Disk.read(2,len(data))
-			log.info('length: %d vs %d'%(len(data),len(rData)))
-			log.info('data = %s',rData)
+			log.info('4-length: %d vs %d'%(len(data),len(rData)))
+			if rData != data: log.exception('invalid rData: %s'%rData)
+			else: log.info('success')
+
 			time.sleep(2)
+			data = data[0:10]
 			rData = Disk.read(2,10)
-			log.info('length: %d vs %d'%(len(data),len(rData)))
-			log.info('data = %s',rData)
+			log.info('5-length: %d vs %d'%(len(data),len(rData)))
+			if rData != data: log.exception('invalid rData: %s'%rData)
+			else: log.info('success')
 
 		if 1:
-			free_node = Disk.get_region(20)
-			log.info('get_region = %s'%free_node)
+			#free_node = Disk.get_region(1500)
+			#log.info('get_region = %s'%free_node)
 
-			Disk.write(0,'aaa')
-			strA = 'A'*5000
+			strA = 'A'
 			strB = 'B'*4096*4
 			Disk.write(0,strA)
-			#Disk.write(5000,strB)
+			Disk.write(5000,strB)
 
+			time.sleep(3)
 			#log.info('region A [%d] and B [%d] written'%(len(strA),len(strB)))
 			readA = Disk.read(0,len(strA))
-			#readB = Disk.read(5000,len(strB))
+			readB = Disk.read(5000,len(strB))
 			log.info('region A and B read')
 			if readA != strA: log.error('corruption in region A (%d bytes)'%len(readA))
-			else:				log.debug('region A read successfully')
-			#if readB != strB: log.error('corruption in region B (%d bytes)'%len(readB))
+			else:             log.debug('region A read successfully')
+			if readB != strB: log.error('corruption in region B (%d bytes)'%len(readB))
+			else:             log.debug('region B read successfully')
 			import binascii
 			#if readA != strA:
 			#	print binascii.hexlify(strA)

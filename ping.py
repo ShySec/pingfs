@@ -55,7 +55,11 @@ def build_ping(ID, data):
 	# Return built ICMP message
 	return header+data
 
-def build_socket():
+def build_socket(RCVBUF=1024*1024):
+# By default, SO_RCVBUF is ~50k (kernel doubles to 114688), which only supports
+# ~1k blocks with <1ms timing. Raising this to 1m supports >16k blocks. Unfortunately,
+# raising it more does little because we can't read/process the events fast enough, so
+# the buffer pretty quickly fills, and then start dropping packets again.
 	log.trace('ping::build_socket')
 	icmp = socket.getprotobyname("icmp")
 	try:
@@ -65,6 +69,8 @@ def build_socket():
 			msg = msg + (" (ICMP messages can only be sent from processes running as root)")
 			raise socket.error(msg)
 		raise # raise the original error
+	socket.SO_RCVBUFFORCE = 33
+	icmp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUFFORCE, RCVBUF)
 	return icmp_socket
 
 def time_ping(d_socket, d_addr, ID=1):
@@ -122,7 +128,7 @@ def parse_ping(packet,validate=False):
 	if not ip:                                return None
 	if ip['protocol'] != socket.IPPROTO_ICMP: return None # ICMP
 	if ip['version'] != socket.IPPROTO_IPIP:  return None # IPv4
-	if ip['length']+8 > len(packet):          return None # invalid ICMP header
+	if ip['length']+8+1 > len(packet):        return None # invalid ICMP header
 
 	packet = packet[ip['length']:]
 	icmp = parse_icmp(packet,validate)
@@ -132,14 +138,16 @@ def parse_ping(packet,validate=False):
 	if validate and icmp['valid'] != True:    return None # invalid ICMP checksum
 
 	payload = packet[8:]
-	log.debug('ping::parse_ping: valid echo reply w/ ID=%d (%d bytes)'
-			%(icmp['block_id'],len(payload)))
+	log.debug('ping::parse_ping: valid echo reply w/ ID=%d (%d bytes)'%(icmp['block_id'],len(payload)))
 	return dict(ip=ip,icmp=icmp,payload=payload)
 	
 
 def recv_ping(d_socket, timeout, validate=False):
 	d_socket.settimeout(timeout)
-	data,addr = d_socket.recvfrom(65536)
+	try:
+		data,addr = d_socket.recvfrom(2048)
+	except socket.timeout:
+		return None
 	parsed = parse_ping(data,validate)
 	if not parsed: return None
 	parsed['ID']=parsed['icmp']['block_id']
