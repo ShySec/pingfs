@@ -216,10 +216,9 @@ class PingFS:
 
 	def read_inode(self,inode,length=0):
 		log.debug('PingFS::read_inode: inode=%d length=%d'%(inode,length))
-		if length == 0:
-			block_size = max(self.disk.block_size(),PingFile.file_header)
+		if length == 0: block_size = max(self.disk.block_size(),PingFile.file_header)
 		data = self.disk.read(inode,block_size)
-		size = interpretSize(data)
+		size = PingFile.file_header + interpretSize(data)
 
 		if size > len(data):
 			data = self.disk.read(inode,size)
@@ -267,8 +266,32 @@ class PingFS:
 				return pFile
 		return None
 
+	def get_both(self, path):
+		log.notice('PingFS::get_both %s'%path)
+		if self.cache_hit(path):
+			if self.cache.parent:
+				return (self.cache.parent,self.cache)
+		if path == '/' or path == '':
+			if self.cache.inode == 0:
+				return (self.cache,self.cache)
+			return self.read_as_dir(0)
+		parts = path.rsplit('/',1)
+		if len(parts) != 2: raise Exception('PingFS::get_both: invalid path: %s'%path)
+		sPath,sName = parts[0],parts[1]
+		pDir = self.get(sPath)
+		if not pDir: return (None,None)
+		if not pDir.type == stat.S_IFDIR: return (None,None)
+		pEntry = pDir.get_dirent(sName)
+		self.cache = pDir # cache the directory
+		self.cache.name = sPath
+		if not pEntry: return (pDir,None)
+		data = self.read_inode(pEntry.inode)
+		pFile = interpretFile(data)
+		pFile.name = pEntry.name
+		return (pDir,pFile)
+
 	def get_parent(self, path, pFile=None):
-		if path == '/' or path == '': return self.get('/')
+		if path == '/' or path == '': return self.read_as_dir(0)
 		parts = path.rsplit('/',1)
 		if len(parts) != 2:
 			log.exception('PingFS::get_parent: invalid path: %s'%path)
@@ -347,20 +370,18 @@ class PingFS:
 
 	def relocate(self,pFile,pDir=None):
 		log.notice('relocating %s to larger region'%pFile)
-		print 'relocating %s to larger region'%pFile
 		region = self.disk.get_region(pFile.size())
 		if not region: raise Exception('PingFS::update %s at %d: collision correction fail'%(pFile.name,pFile.inode))
 		if not pFile.parent: pFile.parent = pDir
 		if not pFile.parent: raise Exception('PingFS::update %s at %d: collision parent not found'%(pFile.name,pFile.inode))
 		if not self.move_blocks(None,pFile,region,pFile.parent):
 			raise Exception('PingFS::update %s at %d: collision correction failed'%(pFile.name,pFile.inode))
-		print 'relocated %s to %d region'%(pFile,region)
+		log.notice('relocated %d:%s to region %d'%(pFile.inode,pFile.name,region))
 		return True
 	
 	def update(self,pFile,pDir=None):
-		log.debug('PingFS::update %s at %d'%(pFile.name,pFile.inode))
+		log.debug('PingFS::update %s at %d [%d -> %d]'%(pFile.name,pFile.inode,pFile.disk_size,pFile.size()))
 		if pFile.size() > pFile.disk_size:
-			log.debug('%d: %d -> %d'%(pFile.inode,pFile.disk_size,pFile.size()))
 			region = self.disk.test_region(pFile.inode,pFile.disk_size,pFile.size())
 			if region != pFile.inode: return self.relocate(pFile,pDir) # continuing would cause collision
 		self.disk.write(pFile.inode,pFile.serialize())

@@ -126,17 +126,16 @@ class PingFuse(fuse.Fuse):
 		return -errno.EINVAL
 
 	def write(self, path, buf, offset):
-		log.info('write: %s region=%d,%d'%(path,offset,len(buf)))
+		log.info('write: %s region=%d,%d'%(path,offset,offset+len(buf)))
 		pFile = self.FS.get(path)
 		if not pFile: return -errno.ENOENT
 		pDir = self.FS.get_parent(path,pFile)
 		if not pDir: raise Exception('write failed to find parent after filding child!')
+		if offset:
+			fill = '\0' * min(0,offset - len(pFile.data)) # technically don't need to bound negatives
+			offset = pFile.data[:offset] + fill
+		else: offset = ''
 
-	#		pFile = self.FS.create(path, buf, offset)
-	#		if not pFile: return -errno.EINVAL
-	#	else:
-		if not offset: offset = ''
-		else: offset = '\0'*offset
 		pFile.data = offset + buf
 		if not self.FS.update(pFile,pDir):
 			return -errno.EINVAL
@@ -160,7 +159,28 @@ class PingFuse(fuse.Fuse):
 		pFile = self.FS.create(path)
 		if not pFile: return -errno.EINVAL
 		pFile.mode = mode & 0777
-		self.FS.add(pFile)
+		self.FS.update(pFile)
+		return 0
+
+	def rename(self, old_path, new_path):
+		log.info('rename: %s -> %s'%(old_path,new_path))
+
+		(oDir,oFile) = self.FS.get_both(old_path)
+		(nDir,nFile) = self.FS.get_both(new_path)
+		new_name = new_path.rsplit('/',1)[1]
+
+		if not oFile: return -errno.ENOENT
+		if not oDir or not nDir: return -errno.ENOENT
+		if nFile: return -errno.EEXIST
+
+		oDir.del_node(oFile.name,oFile)
+		oFile.name = new_name
+		nDir.add_node(oFile)
+
+		# better to be in both than neither
+		self.FS.update(nDir)
+		self.FS.update(oFile)
+		self.FS.update(oDir)
 		return 0
 
 	def link(self, targetPath, linkPath):
@@ -173,10 +193,6 @@ class PingFuse(fuse.Fuse):
 
 	def symlink(self, targetPath, linkPath):
 		log.info('symlink: %s <- %s'%(targetPath, linkPath))
-		return -errno.ENOSYS
-
-	def rename(self, oldPath, newPath):
-		log.info('rename: %s -> %s'%(oldPath,newPath))
 		return -errno.ENOSYS
 
 #	def mythread ( self ):
@@ -202,9 +218,11 @@ class PingFuse(fuse.Fuse):
 
 
 if __name__ == "__main__":
-	#ping_reporter.enableAllLogs(logging.TRACE)
-	ping_reporter.start_log(log,logging.DEBUG)
-	ping_reporter.start_log(ping_filesystem.log,logging.ERROR)
+	import ping_disk
+	#ping_reporter.enableAllLogs(logging.DEBUG,logging.TRACE)
+	ping_reporter.start_log(log,logging.NOTICE)
+	#ping_reporter.start_log(ping_filesystem.log,logging.DEBUG)
+	#ping_reporter.start_log(ping_disk.log,logging.DEBUG)
 	server = ping.select_server(log)
 	if len(sys.argv) < 2:
 		print 'usage: %s <mountpoint>' % sys.argv[0]
@@ -220,6 +238,36 @@ if __name__ == "__main__":
 	ping_filesystem.init_fs(fs.FS)
 	#ping_filesystem.test_fs(fs.FS)
 
+
+	if 0:
+		log.info('file system testing begun')
+		fs.mknod('/test_file2',stat.S_IFREG | 0777,0)
+		fs.mknod('/test_file1',stat.S_IFREG | 0777,0)
+		wData = 'A'*fs.FS.disk.region_size()*fs.FS.disk.block_size()
+
+		fs.write('/test_file1',wData,0)
+		log.info('completed writing testfile1: %d bytes'%len(wData))
+		rData = fs.read('/test_file1',len(wData),0)
+		if rData == wData:             log.info( 'read verified successfully')
+		elif len(wData) != len(rData): log.error('read failed (%d of %d bytes)'%(len(rData),len(wData)))
+		else:                          log.error('read failed (bytes corrupted)')
+
+		fs.write('/test_file1',wData,len(wData))
+		wData = wData + wData
+		log.info('completed writing testfile1: %d bytes'%len(wData))
+		rData = fs.read('/test_file1',len(wData),0)
+		if rData == wData:             log.info( 'read verified successfully')
+		elif len(wData) != len(rData): log.error('read failed (%d of %d bytes)'%(len(rData),len(wData)))
+		else:                          log.error('read failed (bytes corrupted)')
+
+		fs.write('/test_file2',wData,0)
+		log.info('completed writing testfile2: %d bytes'%len(wData))
+		rData = fs.read('/test_file2',len(wData),0)
+		if rData == wData:             log.info( 'read verified successfully')
+		elif len(wData) != len(rData): log.error('read failed (%d of %d bytes)'%(len(rData),len(wData)))
+		else:                          log.error('read failed (bytes corrupted)')
+
+	log.info('file system testing complete')
 	log.info('file system up and running')
 	try:
 		fs.main()

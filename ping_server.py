@@ -11,20 +11,19 @@ class PingTimer(threading.Thread): # helper class for PingServer to manage timeo
 		self.running = False
 		self.event = event
 
+	def stop(self):
+		log.debug('PingTimeout terminating')
+		self.running = False
+		self.event.set()
+
 	def run(self):
 		self.running = True
 		log.debug('PingTimeout starting')
 		while self.running:
 			timeout = None
 			self.event.clear()
-			if self.queue.qsize() > 0:
-				timeout = self.process()
+			timeout = self.process()
 			self.event.wait(timeout)
-
-	def stop(self):
-		log.debug('PingTimeout terminating')
-		self.running = False
-		self.event.set()
 
 	def process(self):
 		while self.queue.qsize() > 0:
@@ -142,8 +141,7 @@ class PingServer(threading.Thread):
 		while len(self.queued_events[ID]):
 			handler,event,args = self.queued_events[ID].popleft()
 			if event.is_set(): continue
-			event.set()
-			
+
 			if handler == self.write_block_timeout:
 				if self.debug: log.trace('%s (block %d) updated'%(self.server[0],ID))
 				data = args[1]
@@ -155,12 +153,13 @@ class PingServer(threading.Thread):
 			elif handler == self.delete_block_timeout:
 				if self.debug: log.trace('%s (block %d) deleted'%(self.server[0],ID))
 				data = ''
+			event.set()
 
 		if len(data) == 0:
 			self.blocks = self.blocks - 1
 		else:
 			if len(self.listeners): self.process_listeners(addr, ID, data)
-			log.trace('%s: sending %d bytes from block %d'%(self.server[0],len(data),ID))
+			#log.trace('%s: sending %d bytes from block %d'%(self.server[0],len(data),ID))
 			ping.data_ping(self.socket, addr, ID, data)
 
 	def process_listeners(self, addr, ID, data):
@@ -210,7 +209,6 @@ class PingServer(threading.Thread):
 	def read_block_timeout(self, ID, callback, cb_args):
 		log.debug('PingServer::read_block_timeout: ID=%d callback=%s'%(ID,callback.__name__))
 		callback(ID,self.null_block(),*cb_args)
-		print 'read_timeout',ID
 
 	def delete_block_timeout(self, ID):
 		log.debug('PingServer::delete_block_timeout: ID=%d'%ID)

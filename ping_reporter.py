@@ -12,14 +12,14 @@ def setup_log(name,level=logging.ERROR):
 	log.setLevel(level)
 	return log
 
-def start_log(logger,level=logging.NOTICE):
-	logger.setLevel(level)
-	addStreamHandler(logger)
-	addFileHandler(logger)
+def start_log(logger,stream=logging.NOTICE,logs=logging.TRACE):
+	logger.setLevel(min(stream,logs))
+	addStreamHandler(logger,stream)
+	addFileHandler(logger,logs)
 
 def addFileHandler(log,level=None):
-	formatter = logging.Formatter('[%(levelname)s] %(message)s')
-	handler = logging.FileHandler(log.name+'.log')
+	formatter = logging.Formatter('[%(levelname)-6s] '+'[%s]'%log.name+' %(message)s')
+	handler = logging.FileHandler('pingfs.log')
 	if level: handler.setLevel(level)
 	handler.setFormatter(formatter)
 	log.addHandler(handler)
@@ -42,15 +42,14 @@ def log_notice(self, msg, *args, **kwargs):
 def log_trace(self, msg, *args, **kwargs):
 	log_generic(self,logging.TRACE,msg,*args,**kwargs)
 
-def enableAllLogs(level=logging.INFO):
-	import ping, ping_disk, ping_server
-	start_log(ping.log,level)
-	start_log(ping_disk.log,level)
-	start_log(ping_server.log,level)
-
+def enableAllLogs(screen=logging.INFO,logs=logging.TRACE):
 	import ping_filesystem, ping_fuse
-	start_log(ping_fuse.log,level)
-	start_log(ping_filesystem.log,level)
+	import ping, ping_disk, ping_server
+	#start_log(ping.log,          screen,logs)
+	start_log(ping_server.log,    screen,logs)
+	start_log(ping_disk.log,      screen,logs)
+	start_log(ping_filesystem.log,screen,logs)
+	start_log(ping_fuse.log,      screen,logs)
 
 import ping
 def humanize_bytes(bytes, precision=2):

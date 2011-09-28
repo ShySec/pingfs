@@ -140,9 +140,10 @@ class PingDisk():
 		if not free: return None
 		max_blockid = (1<<28)
 
-		# 1) try allocating a new prime region
+		# 1) allocate an encompassing span of regions
 		top_node = max(free.keys())
-		reg_size = self.region_size()*int(1 + blocks*self.block_size()/self.region_size())
+		reg_size = self.region_size() * int(1 + blocks/self.region_size())
+		top_node = reg_size * int(1 + top_node/reg_size)
 		if max_blockid - top_node > reg_size: return top_node
 
 		# 2)try minimal sufficiently large region
@@ -162,7 +163,7 @@ class PingDisk():
 		block = self.byte_to_block(bytes)              # to blocks
 		region = self.get_block_region(block,timeout)  # <------>
 		if region: region = self.block_to_byte(region) # to bytes
-		print '-------------------------------> %d allocated (%d bytes)'%(region,bytes)
+		log.debug('get_region: allocated region %d (%d bytes)'%(region,bytes))
 		return region
 
 	def test_region(self, start, end, length, timeout=None):
@@ -179,13 +180,11 @@ class PingDisk():
 			log.exception('test_region: used blocks returned nil')
 			raise Exception('test_region: used blocks returned nil')
 
-		print 'test_region',start,end,length,'<-c1->',collision2,'<-c2->',collision,'|||',used
 		for x in used:
-			if x+used[x] <= collision[0]: continue # used block terminates before collision
-			if x         >  collision[1]: continue # used block begins after collision space
-			print 'possible collision',x,used[x]
+			if x <= collision[0]: continue # used block before test region (no collision)
+			if x  > collision[1]: continue # used block begins after collision space
+			log.debug('test_region: collision at node %d'%x)
 			return False
-		print 'no collision'
 		return start
 		
 
@@ -198,7 +197,7 @@ if __name__ == "__main__":
 		Disk = PingDisk(server,4)
 		#ping.drop_privileges()
 
-		if 0:
+		if 1:
 			data = "1234567890123456789_123456789012345"
 			log.info('blind disk read')
 			rData = Disk.read(0,50)
@@ -256,10 +255,6 @@ if __name__ == "__main__":
 			else:             log.debug('region A read successfully')
 			if readB != strB: log.error('corruption in region B (%d bytes)'%len(readB))
 			else:             log.debug('region B read successfully')
-			import binascii
-			#if readA != strA:
-			#	print binascii.hexlify(strA)
-			#	print binascii.hexlify(readA)
 
 		time.sleep(10)
 		print 'terminate'

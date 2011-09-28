@@ -6,19 +6,21 @@ ping_bandwidth = 0
 log = ping_reporter.setup_log('Ping')
 server_list = ['www.google.com','172.16.2.1','10.44.0.1']
 
-def select_server(log,max_timeout=2):
+def select_server(log,max_timeout=1):
 	server = ''
+	log.notice('selecting server')
+	maxw = len(max(server_list, key=len))
 	min_delay = max_timeout * 1000 # seconds -> ms
-	log.trace('selecting server')
 	for x in server_list:
 		delay = min_delay + 1
-		log.notice('pinging %s'%x)
 		try: delay = single_ping(x,max_timeout)
 		finally:
+			if delay == None: log.notice('%-*s: timed out'%(maxw,x))
+			else:             log.notice('%-*s: %05.02fms'%(maxw,x,delay*1000))
 			if delay != None and delay < min_delay:
 				min_delay = delay
 				server = x
-	log.info('server: %s (%.02fms)'%(server,min_delay*1000))
+	log.info('selected server: %s (%.02fms)'%(server,min_delay*1000))
 	return server
 
 def carry_add(a, b):
